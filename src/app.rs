@@ -1,8 +1,7 @@
 use gio;
 use gtk;
 use gtk::prelude::*;
-use std::{env, sync, time, thread};
-use bg_thread;
+use std::env;
 
 // TODO: Is this the correct format for GApplication IDs?
 const APP_ID: &'static str = "jplatte.ruma_gtk";
@@ -14,20 +13,6 @@ const APP_ID: &'static str = "jplatte.ruma_gtk";
 pub struct App {
     /// GTK Application which runs the main loop.
     gtk_app: gtk::Application,
-
-    /// Used to access the UI elements.
-    gtk_builder: gtk::Builder,
-
-    /// Channel receiver which allows to run actions from the matrix connection thread.
-    ///
-    /// Long polling is required to receive messages from the rooms and so they have to
-    /// run in separate threads.  In order to allow those threads to modify the gtk content,
-    /// they will send closures to the main thread using this channel.
-    dispatch_rx: sync::mpsc::Receiver<Box<Fn(&gtk::Builder) + Send>>,
-
-    /// Matrix communication thread join handler used to clean up the tread when
-    /// closing the application.
-    bg_thread_join_handle: thread::JoinHandle<()>,
 }
 
 impl App {
@@ -64,17 +49,8 @@ impl App {
             window.show_all();
         });
 
-        // Create channel to allow the matrix connection thread to send closures to the main loop.
-        let (dispatch_tx, dispatch_rx) = sync::mpsc::channel::<Box<Fn(&gtk::Builder) + Send>>();
-
-        let bg_thread_join_handle =
-            thread::spawn(move || bg_thread::run(dispatch_tx));
-
         App {
             gtk_app: gtk_app,
-            gtk_builder: gtk_builder,
-            dispatch_rx: dispatch_rx,
-            bg_thread_join_handle: bg_thread_join_handle,
         }
     }
 
@@ -84,23 +60,7 @@ impl App {
         let args = env::args().collect::<Vec<_>>();
         let args_refs = args.iter().map(|x| &x[..]).collect::<Vec<_>>();
 
-
-        // Poll the matrix communication thread channel and run the closures to allow
-        // the threads to run actions in the main loop.
-        let dispatch_rx = self.dispatch_rx;
-        let gtk_builder = self.gtk_builder;
-        gtk::idle_add(move || {
-            if let Ok(dispatch_fn) = dispatch_rx.recv_timeout(time::Duration::from_millis(5)) {
-                dispatch_fn(&gtk_builder);
-            }
-
-            Continue(true)
-        });
-
         // Run the main loop.
         self.gtk_app.run(args_refs.len() as i32, &args_refs);
-
-        // Clean up
-        self.bg_thread_join_handle.join().unwrap();
     }
 }
